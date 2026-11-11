@@ -1,0 +1,138 @@
+{
+  "name": "Lead Review Digest",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8,20 * * *"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "00549f3a-c6b6-4f67-a7cd-27169339699e",
+      "name": "8am and 8pm"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, gmail_message_id, sender_name, sender_email, subject, category, urgency, summary, deadline, confidence_note, received_at, processed_at\nFROM leads\nWHERE needs_human_review = 1\n  AND review_digest_sent_at IS NULL\n  AND urgency IS DISTINCT FROM 'high'   -- urgent ones were already alerted immediately\nORDER BY processed_at;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        220,
+        0
+      ],
+      "id": "2b412158-9d19-4b43-926f-1942b16379ff",
+      "name": "Pending Reviews",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Shared email building blocks (copied into each Code node: n8n Code nodes can't share code) ----\nconst GMAIL_ACCOUNT = \"inbox@example.com\";   // the watched inbox the leads arrive in, for the Open in Gmail link\nconst esc = s => String(s ?? \"\").replace(/[&<>\"']/g, c => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \"&#39;\" }[c]));\nconst CAT = {\n  \"Automation Inquiry\": [\"Automation\", \"#e8f0fe\", \"#1967d2\"],\n  \"Reporting/Data Inquiry\": [\"Reporting / Data\", \"#f3e8fd\", \"#8430ce\"],\n  \"Pricing Question\": [\"Pricing\", \"#e6f4ea\", \"#137333\"],\n  \"Support/Follow-up\": [\"Support / Follow-up\", \"#fef7e0\", \"#b06000\"],\n  \"Spam/Irrelevant\": [\"Spam\", \"#f1f3f4\", \"#5f6368\"],\n  \"Unclear\": [\"Unclear\", \"#f1f3f4\", \"#5f6368\"],\n};\nconst URG = { high: [\"High urgency\", \"#fce8e6\", \"#c5221f\"], medium: [\"Medium urgency\", \"#fef7e0\", \"#b06000\"],\n  low: [\"Low urgency\", \"#e6f4ea\", \"#137333\"], not_stated: [\"No timing given\", \"#f1f3f4\", \"#5f6368\"] };\nconst chip = ([text, bg, fg]) =>\n  `<span style=\"display:inline-block;padding:4px 10px;margin:0 6px 6px 0;border-radius:12px;background:${bg};color:${fg};font-size:12px;font-weight:bold;\">${esc(text)}</span>`;\nconst catChip = c => chip(CAT[c] || [c || \"Unknown\", \"#f1f3f4\", \"#5f6368\"]);\nconst urgChip = u => chip(URG[u] || URG.not_stated);\nconst toDay = v => {                       // DB date may come back as \"2026-11-25\" or as an ISO timestamp\n  if (!v) return null;\n  const s = String(v);\n  if (/^\\d{4}-\\d{2}-\\d{2}$/.test(s)) return s;\n  const d = DateTime.fromISO(s);\n  return d.isValid ? d.setZone(\"Asia/Manila\").toFormat(\"yyyy-MM-dd\") : null;\n};\nconst deadlineText = v => {\n  const day = toDay(v);\n  if (!day) return \"Not given\";\n  const d = DateTime.fromISO(day, { zone: \"Asia/Manila\" });\n  const days = Math.round(d.diff(DateTime.now().setZone(\"Asia/Manila\").startOf(\"day\"), \"days\").days);\n  const rel = days < 0 ? `${-days} day${days === -1 ? \"\" : \"s\"} ago` : days === 0 ? \"today\" : `in ${days} day${days === 1 ? \"\" : \"s\"}`;\n  return `${d.toFormat(\"MMM d, yyyy\")} (${rel})`;\n};\nconst when = v => { const d = DateTime.fromISO(String(v || \"\")); return d.isValid ? d.setZone(\"Asia/Manila\").toFormat(\"MMM d, h:mm a\") : esc(v || \"\"); };\n// Goes through Google's account chooser so Gmail can't intercept the click: opens a new tab, switches to the watched inbox, shows that email.\nconst gmailLink = id => `https://accounts.google.com/AccountChooser?Email=${encodeURIComponent(GMAIL_ACCOUNT)}&continue=${encodeURIComponent(`https://mail.google.com/mail/u/${GMAIL_ACCOUNT}/#all/${id || \"\"}`)}`;\nconst reasonsList = note => {\n  const items = String(note || \"\").split(\" | \").map(s => s.trim()).filter(Boolean);\n  return items.length ? `<ul style=\"margin:0 0 16px 18px;padding:0;font-size:14px;\">${items.map(i => `<li style=\"margin:0 0 6px;\">${esc(i)}</li>`).join(\"\")}</ul>` : \"\";\n};\nconst facts = rows => `<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;margin:0 0 20px;font-size:14px;\">${rows\n  .map(([k, v]) => `<tr><td style=\"padding:6px 12px 6px 0;color:#5f6368;width:96px;vertical-align:top;\">${k}</td><td style=\"padding:6px 0;vertical-align:top;\">${v}</td></tr>`).join(\"\")}</table>`;\nconst button = (href, text, color) =>\n  `<a href=\"${href}\" style=\"display:inline-block;background:${color};color:#ffffff;text-decoration:none;padding:11px 20px;border-radius:6px;font-weight:bold;font-size:14px;\">${esc(text)}</a>`;\nconst section = t => `<div style=\"font-size:12px;font-weight:bold;letter-spacing:.5px;color:#5f6368;text-transform:uppercase;margin:0 0 8px;\">${esc(t)}</div>`;\nconst original = body => `<div style=\"margin-top:24px;\">${section(\"Original email\")}<div style=\"background:#f8f9fa;border-left:3px solid #dadce0;padding:12px 14px;font-size:13px;color:#3c4043;white-space:pre-wrap;line-height:1.5;\">${esc(String(body || \"\").slice(0, 2000))}${String(body || \"\").length > 2000 ? \"\\n…\" : \"\"}</div></div>`;\nconst shell = (accent, label, inner) => `<!doctype html><html><body style=\"margin:0;padding:0;background:#f1f3f4;\">\n<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f1f3f4;padding:24px 8px;\"><tr><td align=\"center\">\n<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;font-family:Arial,Helvetica,sans-serif;color:#202124;line-height:1.4;\">\n<tr><td style=\"background:${accent};padding:12px 24px;color:#ffffff;font-size:12px;font-weight:bold;letter-spacing:1px;\">${esc(label)}</td></tr>\n<tr><td style=\"padding:24px;\">${inner}</td></tr>\n<tr><td style=\"padding:12px 24px;background:#f8f9fa;color:#80868b;font-size:11px;\">Lead Intake Triage · automated message</td></tr>\n</table></td></tr></table></body></html>`;\n// ---- end shared blocks ----\n\n// Builds one HTML digest from all pending review rows.\nconst rows = $input.all().map(i => i.json).filter(r => r.id);   // empty query result gives a placeholder item\nif (rows.length === 0) return [];                                 // nothing pending: send nothing\nconst failed = rows.filter(r => String(r.confidence_note || \"\").includes(\"Gemini call failed\")).length;\nconst warn = failed ? `<div style=\"background:#fef7e0;border:1px solid #f9ab00;border-radius:6px;padding:10px 14px;margin:0 0 18px;font-size:13px;\">⚠️ ${failed} of these failed at Gemini (rate limit or outage). Check the API quota.</div>` : \"\";\nconst items = rows.map((r, n) => `\n  <tr><td style=\"padding:16px 0;border-top:1px solid #e8eaed;\">\n    <div style=\"font-size:12px;color:#80868b;margin:0 0 6px;\">#${n + 1} · Lead ${esc(r.id)} · ${when(r.received_at || r.processed_at)}</div>\n    <div style=\"margin:0 0 6px;\">${catChip(r.category)}${urgChip(r.urgency)}</div>\n    <div style=\"font-size:16px;font-weight:bold;margin:0 0 4px;\">${esc(r.subject || \"(no subject)\")}</div>\n    <div style=\"font-size:13px;color:#5f6368;margin:0 0 8px;\">${esc(r.sender_name || \"\")} &lt;${esc(r.sender_email)}&gt;</div>\n    ${r.summary ? `<div style=\"font-size:14px;margin:0 0 8px;\">${esc(r.summary)}</div>` : \"\"}\n    ${r.deadline ? `<div style=\"font-size:13px;color:#5f6368;margin:0 0 8px;\">Deadline: ${esc(deadlineText(r.deadline))}</div>` : \"\"}\n    <div style=\"font-size:13px;color:#3c4043;\">${reasonsList(r.confidence_note)}</div>\n    <a href=\"${gmailLink(r.gmail_message_id)}\" style=\"font-size:13px;color:#1967d2;font-weight:bold;text-decoration:none;\">Open in Gmail →</a>\n  </td></tr>`).join(\"\");\nconst html = shell(\"#3c4043\", \"REVIEW DIGEST\",\n  `<div style=\"font-size:20px;font-weight:bold;margin:0 0 6px;\">${rows.length} email${rows.length === 1 ? \"\" : \"s\"} need a look</div>\n   <div style=\"font-size:13px;color:#5f6368;margin:0 0 18px;\">Flagged since the last digest. Urgent ones were already sent to you separately.</div>\n   ${warn}<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;\">${items}</table>`);\nreturn [{ json: { subject: `🗂 Review digest: ${rows.length} email${rows.length === 1 ? \"\" : \"s\"} need a look`, body: html, ids: rows.map(r => r.id) } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "id": "3e09767a-c1d4-4bfa-9e9c-d6940f607483",
+      "name": "Build Digest"
+    },
+    {
+      "parameters": {
+        "sendTo": "alerts@example.com",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.body }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        660,
+        0
+      ],
+      "id": "7855f345-e635-489c-a3b2-9775bb25cd43",
+      "name": "Send Digest"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE leads SET review_digest_sent_at = now()\nWHERE id IN ({{ $('Build Digest').item.json.ids.map(Number).filter(Number.isInteger).join(',') }});\n-- ids are integers from our own SELECT, forced through Number() so nothing else can get into the SQL",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        880,
+        0
+      ],
+      "id": "296753db-be34-4c48-afaa-a06f4c1c9bc1",
+      "name": "Mark As Sent"
+    }
+  ],
+  "connections": {
+    "8am and 8pm": {
+      "main": [
+        [
+          {
+            "node": "Pending Reviews",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pending Reviews": {
+      "main": [
+        [
+          {
+            "node": "Build Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Digest": {
+      "main": [
+        [
+          {
+            "node": "Send Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Digest": {
+      "main": [
+        [
+          {
+            "node": "Mark As Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila"
+  }
+}

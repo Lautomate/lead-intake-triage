@@ -1,0 +1,4 @@
+# Local secrets and exports never go in this repo
+.env
+*.local.json
+*.mp4

@@ -1,0 +1,52 @@
+{
+  "name": "Error Alert",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "d41c3577-e31e-43d9-9ff8-b516b9a4fac3",
+      "name": "On Workflow Error"
+    },
+    {
+      "parameters": {
+        "sendTo": "alerts@example.com",
+        "subject": "=⚠️ Workflow failed: {{ $json.workflow.name }}",
+        "emailType": "html",
+        "message": "=<!doctype html><html><body style=\"margin:0;padding:0;background:#f1f3f4;\">\n<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f1f3f4;padding:24px 8px;\"><tr><td align=\"center\">\n<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;font-family:Arial,Helvetica,sans-serif;color:#202124;line-height:1.4;\">\n<tr><td style=\"background:#e37400;padding:12px 24px;color:#ffffff;font-size:12px;font-weight:bold;letter-spacing:1px;\">WORKFLOW FAILED</td></tr>\n<tr><td style=\"padding:24px;\">\n<div style=\"font-size:20px;font-weight:bold;margin:0 0 18px;\">{{ String($json.workflow.name ?? 'Unknown workflow').replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c])) }} stopped</div>\n<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;margin:0 0 20px;font-size:14px;\">\n<tr><td style=\"padding:6px 12px 6px 0;color:#5f6368;width:96px;vertical-align:top;\">Failed at</td><td style=\"padding:6px 0;font-weight:bold;\">{{ String($json.execution.lastNodeExecuted ?? 'unknown').replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c])) }}</td></tr>\n<tr><td style=\"padding:6px 12px 6px 0;color:#5f6368;vertical-align:top;\">When</td><td style=\"padding:6px 0;\">{{ $now.setZone('Asia/Manila').toFormat('MMM d, h:mm a') }}</td></tr>\n</table>\n<div style=\"font-size:12px;font-weight:bold;letter-spacing:.5px;color:#5f6368;text-transform:uppercase;margin:0 0 8px;\">Error</div>\n<div style=\"background:#fce8e6;border-left:3px solid #c5221f;padding:12px 14px;font-size:13px;font-family:Consolas,monospace;white-space:pre-wrap;margin:0 0 20px;\">{{ String($json.execution.error?.message ?? 'No message').replace(/[&<>\"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c])) }}</div>\n<div style=\"font-size:12px;font-weight:bold;letter-spacing:.5px;color:#5f6368;text-transform:uppercase;margin:0 0 8px;\">What to check</div>\n<div style=\"font-size:14px;margin:0 0 20px;\">{{ /invalid_grant|token/i.test($json.execution.error?.message ?? '') ? 'Gmail login expired. In n8n, open Credentials, then Gmail account, and click Sign in with Google again.' : /429|quota|rate/i.test($json.execution.error?.message ?? '') ? 'Gemini rate limit or quota. Wait a few minutes; if it repeats, check the quota in Google AI Studio.' : /timeout|timed out/i.test($json.execution.error?.message ?? '') ? 'The run hit the 10-minute limit, usually Gemini being slow. Check for inbox emails without the Triaged label.' : /ECONNREFUSED|postgres|database/i.test($json.execution.error?.message ?? '') ? 'Postgres is unreachable. Make sure Docker Desktop is running.' : 'Open the execution to see which node failed and why.' }}</div>\n<a href=\"{{ $json.execution.url }}\" style=\"display:inline-block;background:#e37400;color:#ffffff;text-decoration:none;padding:11px 20px;border-radius:6px;font-weight:bold;font-size:14px;\">Open the failed execution</a>\n</td></tr>\n<tr><td style=\"padding:12px 24px;background:#f8f9fa;color:#80868b;font-size:11px;\">Error Alert · automated message</td></tr>\n</table></td></tr></table></body></html>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        240,
+        0
+      ],
+      "id": "fea8cc80-57f1-41cf-b50b-d36460a70335",
+      "name": "Send Error Alert"
+    }
+  ],
+  "connections": {
+    "On Workflow Error": {
+      "main": [
+        [
+          {
+            "node": "Send Error Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila"
+  }
+}

@@ -1,0 +1,140 @@
+{
+  "name": "Lead Weekly Report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "30 8 * * 1"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "id": "8482f052-529b-4da8-b2c0-853265b3e072",
+      "name": "Monday 8:30am"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT category, count(*) AS total, sum(needs_human_review) AS reviewed\nFROM leads\nWHERE processed_at::timestamptz >= now() - interval '7 days'\n  AND COALESCE(gmail_message_id, '') NOT LIKE 'eval-%'\n  AND COALESCE(gmail_message_id, '') NOT LIKE 'test-%'\nGROUP BY category\nORDER BY total DESC;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        220,
+        0
+      ],
+      "id": "81e3e8aa-f4db-4d83-92a1-cd8fd9742f03",
+      "name": "Counts by Category",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, subject, summary, confidence_note\nFROM leads\nWHERE category = 'Unclear'\n  AND processed_at::timestamptz >= now() - interval '7 days'\n  AND COALESCE(gmail_message_id, '') NOT LIKE 'eval-%'\n  AND COALESCE(gmail_message_id, '') NOT LIKE 'test-%'\nORDER BY processed_at;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        440,
+        0
+      ],
+      "id": "ff540797-dece-464c-b10e-c9e217295ef6",
+      "name": "Unclear This Week",
+      "alwaysOutputData": true,
+      "executeOnce": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Shared email building blocks (copied into each Code node: n8n Code nodes can't share code) ----\nconst GMAIL_ACCOUNT = \"inbox@example.com\";   // the watched inbox the leads arrive in, for the Open in Gmail link\nconst esc = s => String(s ?? \"\").replace(/[&<>\"']/g, c => ({ \"&\": \"&amp;\", \"<\": \"&lt;\", \">\": \"&gt;\", '\"': \"&quot;\", \"'\": \"&#39;\" }[c]));\nconst CAT = {\n  \"Automation Inquiry\": [\"Automation\", \"#e8f0fe\", \"#1967d2\"],\n  \"Reporting/Data Inquiry\": [\"Reporting / Data\", \"#f3e8fd\", \"#8430ce\"],\n  \"Pricing Question\": [\"Pricing\", \"#e6f4ea\", \"#137333\"],\n  \"Support/Follow-up\": [\"Support / Follow-up\", \"#fef7e0\", \"#b06000\"],\n  \"Spam/Irrelevant\": [\"Spam\", \"#f1f3f4\", \"#5f6368\"],\n  \"Unclear\": [\"Unclear\", \"#f1f3f4\", \"#5f6368\"],\n};\nconst URG = { high: [\"High urgency\", \"#fce8e6\", \"#c5221f\"], medium: [\"Medium urgency\", \"#fef7e0\", \"#b06000\"],\n  low: [\"Low urgency\", \"#e6f4ea\", \"#137333\"], not_stated: [\"No timing given\", \"#f1f3f4\", \"#5f6368\"] };\nconst chip = ([text, bg, fg]) =>\n  `<span style=\"display:inline-block;padding:4px 10px;margin:0 6px 6px 0;border-radius:12px;background:${bg};color:${fg};font-size:12px;font-weight:bold;\">${esc(text)}</span>`;\nconst catChip = c => chip(CAT[c] || [c || \"Unknown\", \"#f1f3f4\", \"#5f6368\"]);\nconst urgChip = u => chip(URG[u] || URG.not_stated);\nconst toDay = v => {                       // DB date may come back as \"2026-11-25\" or as an ISO timestamp\n  if (!v) return null;\n  const s = String(v);\n  if (/^\\d{4}-\\d{2}-\\d{2}$/.test(s)) return s;\n  const d = DateTime.fromISO(s);\n  return d.isValid ? d.setZone(\"Asia/Manila\").toFormat(\"yyyy-MM-dd\") : null;\n};\nconst deadlineText = v => {\n  const day = toDay(v);\n  if (!day) return \"Not given\";\n  const d = DateTime.fromISO(day, { zone: \"Asia/Manila\" });\n  const days = Math.round(d.diff(DateTime.now().setZone(\"Asia/Manila\").startOf(\"day\"), \"days\").days);\n  const rel = days < 0 ? `${-days} day${days === -1 ? \"\" : \"s\"} ago` : days === 0 ? \"today\" : `in ${days} day${days === 1 ? \"\" : \"s\"}`;\n  return `${d.toFormat(\"MMM d, yyyy\")} (${rel})`;\n};\nconst when = v => { const d = DateTime.fromISO(String(v || \"\")); return d.isValid ? d.setZone(\"Asia/Manila\").toFormat(\"MMM d, h:mm a\") : esc(v || \"\"); };\n// Goes through Google's account chooser so Gmail can't intercept the click: opens a new tab, switches to the watched inbox, shows that email.\nconst gmailLink = id => `https://accounts.google.com/AccountChooser?Email=${encodeURIComponent(GMAIL_ACCOUNT)}&continue=${encodeURIComponent(`https://mail.google.com/mail/u/${GMAIL_ACCOUNT}/#all/${id || \"\"}`)}`;\nconst reasonsList = note => {\n  const items = String(note || \"\").split(\" | \").map(s => s.trim()).filter(Boolean);\n  return items.length ? `<ul style=\"margin:0 0 16px 18px;padding:0;font-size:14px;\">${items.map(i => `<li style=\"margin:0 0 6px;\">${esc(i)}</li>`).join(\"\")}</ul>` : \"\";\n};\nconst facts = rows => `<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;margin:0 0 20px;font-size:14px;\">${rows\n  .map(([k, v]) => `<tr><td style=\"padding:6px 12px 6px 0;color:#5f6368;width:96px;vertical-align:top;\">${k}</td><td style=\"padding:6px 0;vertical-align:top;\">${v}</td></tr>`).join(\"\")}</table>`;\nconst button = (href, text, color) =>\n  `<a href=\"${href}\" style=\"display:inline-block;background:${color};color:#ffffff;text-decoration:none;padding:11px 20px;border-radius:6px;font-weight:bold;font-size:14px;\">${esc(text)}</a>`;\nconst section = t => `<div style=\"font-size:12px;font-weight:bold;letter-spacing:.5px;color:#5f6368;text-transform:uppercase;margin:0 0 8px;\">${esc(t)}</div>`;\nconst original = body => `<div style=\"margin-top:24px;\">${section(\"Original email\")}<div style=\"background:#f8f9fa;border-left:3px solid #dadce0;padding:12px 14px;font-size:13px;color:#3c4043;white-space:pre-wrap;line-height:1.5;\">${esc(String(body || \"\").slice(0, 2000))}${String(body || \"\").length > 2000 ? \"\\n…\" : \"\"}</div></div>`;\nconst shell = (accent, label, inner) => `<!doctype html><html><body style=\"margin:0;padding:0;background:#f1f3f4;\">\n<table role=\"presentation\" width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f1f3f4;padding:24px 8px;\"><tr><td align=\"center\">\n<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;font-family:Arial,Helvetica,sans-serif;color:#202124;line-height:1.4;\">\n<tr><td style=\"background:${accent};padding:12px 24px;color:#ffffff;font-size:12px;font-weight:bold;letter-spacing:1px;\">${esc(label)}</td></tr>\n<tr><td style=\"padding:24px;\">${inner}</td></tr>\n<tr><td style=\"padding:12px 24px;background:#f8f9fa;color:#80868b;font-size:11px;\">Lead Intake Triage · automated message</td></tr>\n</table></td></tr></table></body></html>`;\n// ---- end shared blocks ----\n\n// Weekly report: counts per category plus every Unclear email, for spotting new categories.\nconst counts = $('Counts by Category').all().map(i => i.json).filter(r => r.category);\nconst unclear = $('Unclear This Week').all().map(i => i.json).filter(r => r.id);\nconst total = counts.reduce((s, r) => s + Number(r.total), 0);\nconst reviewed = counts.reduce((s, r) => s + Number(r.reviewed || 0), 0);\nconst end = DateTime.now().setZone(\"Asia/Manila\"), start = end.minus({ days: 7 });\nconst max = Math.max(1, ...counts.map(r => Number(r.total)));\nconst rowsHtml = counts.map(r => `<tr>\n  <td style=\"padding:8px 12px 8px 0;width:40%;\">${catChip(r.category)}</td>\n  <td style=\"padding:8px 0;\"><div style=\"background:#8ab4f8;height:10px;border-radius:5px;width:${Math.max(4, Math.round(100 * Number(r.total) / max))}%;\"></div></td>\n  <td style=\"padding:8px 0 8px 12px;text-align:right;font-weight:bold;width:40px;\">${esc(r.total)}</td>\n  <td style=\"padding:8px 0 8px 12px;text-align:right;color:#5f6368;font-size:12px;width:150px;\">${esc(r.reviewed || 0)} ${Number(r.reviewed) === 1 ? \"needs\" : \"need\"} manual review</td></tr>`).join(\"\");\nconst unclearHtml = unclear.length\n  ? `<ul style=\"margin:0 0 0 18px;padding:0;font-size:14px;\">${unclear.map(r => `<li style=\"margin:0 0 8px;\"><b>${esc(r.subject || \"(no subject)\")}</b><br><span style=\"color:#5f6368;\">${esc(r.summary || r.confidence_note || \"\")}</span></li>`).join(\"\")}</ul>`\n  : `<div style=\"font-size:14px;color:#5f6368;\">None this week.</div>`;\nconst html = shell(\"#137333\", \"WEEKLY REPORT\",\n  `<div style=\"font-size:20px;font-weight:bold;margin:0 0 4px;\">${total} email${total === 1 ? \"\" : \"s\"} triaged</div>\n   <div style=\"font-size:13px;color:#5f6368;margin:0 0 18px;\">${start.toFormat(\"MMM d\")} to ${end.toFormat(\"MMM d, yyyy\")} · ${reviewed} ${reviewed === 1 ? \"needs\" : \"need\"} manual review</div>\n   ${total ? `<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"width:100%;margin:0 0 24px;font-size:14px;\">${rowsHtml}</table>`\n           : `<div style=\"font-size:14px;margin:0 0 24px;\">No emails this week. If that's unexpected, check that Lead Intake Triage is published and running.</div>`}\n   ${section(`Unclear emails (${unclear.length})`)}\n   <div style=\"font-size:13px;color:#5f6368;margin:0 0 10px;\">If the same kind of email keeps showing up here, it deserves its own category.</div>\n   ${unclearHtml}`);\nreturn [{ json: { subject: `📊 Weekly report: ${total} email${total === 1 ? \"\" : \"s\"} (${start.toFormat(\"MMM d\")} to ${end.toFormat(\"MMM d\")})`, body: html } }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ],
+      "id": "0a9fe97a-6fd1-4b87-a721-733dc293538e",
+      "name": "Build Report"
+    },
+    {
+      "parameters": {
+        "sendTo": "alerts@example.com",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.body }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        880,
+        0
+      ],
+      "id": "8110b654-0a72-4772-b972-1ff63f25e592",
+      "name": "Send Report"
+    }
+  ],
+  "connections": {
+    "Monday 8:30am": {
+      "main": [
+        [
+          {
+            "node": "Counts by Category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Counts by Category": {
+      "main": [
+        [
+          {
+            "node": "Unclear This Week",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Unclear This Week": {
+      "main": [
+        [
+          {
+            "node": "Build Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Report": {
+      "main": [
+        [
+          {
+            "node": "Send Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Asia/Manila"
+  }
+}
